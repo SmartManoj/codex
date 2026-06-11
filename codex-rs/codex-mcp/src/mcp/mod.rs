@@ -214,7 +214,7 @@ impl ToolPluginProvenance {
 }
 
 pub fn host_owned_codex_apps_enabled(config: &McpConfig, auth: Option<&CodexAuth>) -> bool {
-    config.apps_enabled && auth.is_some_and(CodexAuth::is_chatgpt_auth)
+    config.apps_enabled && auth.is_some_and(CodexAuth::uses_codex_backend)
 }
 
 pub fn configured_mcp_servers(config: &McpConfig) -> HashMap<String, McpServerConfig> {
@@ -241,8 +241,7 @@ pub fn effective_mcp_servers_from_configured(
         .into_iter()
         .map(|(name, server)| (name, EffectiveMcpServer::configured(server)))
         .collect::<HashMap<_, _>>();
-    let host_owned_codex_apps_enabled_for_auth = host_owned_codex_apps_enabled(config, auth);
-    if !host_owned_codex_apps_enabled_for_auth {
+    if !host_owned_codex_apps_enabled(config, auth) {
         servers.remove(CODEX_APPS_MCP_SERVER_NAME);
     }
     servers

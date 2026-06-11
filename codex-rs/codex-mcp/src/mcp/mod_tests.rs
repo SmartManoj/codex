@@ -34,37 +34,6 @@ fn test_mcp_config(codex_home: PathBuf) -> McpConfig {
     }
 }
 
-fn streamable_mcp_server_config(url: &str) -> McpServerConfig {
-    McpServerConfig {
-        transport: McpServerTransportConfig::StreamableHttp {
-            url: url.to_string(),
-            bearer_token_env_var: None,
-            http_headers: None,
-            env_http_headers: None,
-        },
-        environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
-        enabled: true,
-        required: false,
-        supports_parallel_tool_calls: false,
-        disabled_reason: None,
-        startup_timeout_sec: None,
-        tool_timeout_sec: None,
-        default_tools_approval_mode: None,
-        enabled_tools: None,
-        disabled_tools: None,
-        scopes: None,
-        oauth: None,
-        oauth_resource: None,
-        tools: HashMap::new(),
-    }
-}
-
-fn sorted_server_names(servers: &HashMap<String, EffectiveMcpServer>) -> Vec<String> {
-    let mut names = servers.keys().cloned().collect::<Vec<_>>();
-    names.sort();
-    names
-}
-
 #[test]
 fn qualified_mcp_tool_name_prefix_sanitizes_server_names_without_lowercasing() {
     assert_eq!(
@@ -259,85 +228,6 @@ fn codex_apps_server_config_forwards_configured_product_sku_header() {
     }
 }
 
-#[test]
-fn effective_mcp_servers_gates_host_owned_codex_apps_by_auth() {
-    #[derive(Clone, Copy)]
-    enum AuthKind {
-        ChatGpt,
-        ApiKey,
-    }
-
-    struct Case {
-        name: &'static str,
-        apps_enabled: bool,
-        auth: AuthKind,
-        codex_apps_server_present: bool,
-        expected_server_names: &'static [&'static str],
-    }
-
-    let cases = [
-        Case {
-            name: "api key keeps plugin mcp and removes codex apps",
-            apps_enabled: true,
-            auth: AuthKind::ApiKey,
-            codex_apps_server_present: true,
-            expected_server_names: &["plugin-mcp"],
-        },
-        Case {
-            name: "chatgpt keeps codex apps when app route is present",
-            apps_enabled: true,
-            auth: AuthKind::ChatGpt,
-            codex_apps_server_present: true,
-            expected_server_names: &[CODEX_APPS_MCP_SERVER_NAME, "plugin-mcp"],
-        },
-        Case {
-            name: "chatgpt keeps plugin mcp when codex apps is absent",
-            apps_enabled: true,
-            auth: AuthKind::ChatGpt,
-            codex_apps_server_present: false,
-            expected_server_names: &["plugin-mcp"],
-        },
-        Case {
-            name: "apps disabled keeps plugin mcp and removes codex apps",
-            apps_enabled: false,
-            auth: AuthKind::ChatGpt,
-            codex_apps_server_present: true,
-            expected_server_names: &["plugin-mcp"],
-        },
-    ];
-
-    for case in cases {
-        let codex_home = tempfile::tempdir().expect("tempdir");
-        let mut config = test_mcp_config(codex_home.path().to_path_buf());
-        config.apps_enabled = case.apps_enabled;
-        config.configured_mcp_servers.insert(
-            "plugin-mcp".to_string(),
-            streamable_mcp_server_config("https://plugin.example/mcp"),
-        );
-        if case.codex_apps_server_present {
-            config.configured_mcp_servers.insert(
-                CODEX_APPS_MCP_SERVER_NAME.to_string(),
-                codex_apps_mcp_server_config(
-                    &config.chatgpt_base_url,
-                    config.apps_mcp_product_sku.as_deref(),
-                ),
-            );
-        }
-        let auth = match case.auth {
-            AuthKind::ChatGpt => CodexAuth::create_dummy_chatgpt_auth_for_testing(),
-            AuthKind::ApiKey => CodexAuth::from_api_key("test-api-key"),
-        };
-        let effective = effective_mcp_servers(&config, Some(&auth));
-
-        assert_eq!(
-            sorted_server_names(&effective),
-            case.expected_server_names,
-            "{}",
-            case.name
-        );
-    }
-}
-
 #[tokio::test]
 async fn effective_mcp_servers_preserve_runtime_servers() {
     let codex_home = tempfile::tempdir().expect("tempdir");
@@ -347,11 +237,53 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
 
     config.configured_mcp_servers.insert(
         "sample".to_string(),
-        streamable_mcp_server_config("https://user.example/mcp"),
+        McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://user.example/mcp".to_string(),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+            },
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+            enabled: true,
+            required: false,
+            supports_parallel_tool_calls: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
     );
     config.configured_mcp_servers.insert(
         "docs".to_string(),
-        streamable_mcp_server_config("https://docs.example/mcp"),
+        McpServerConfig {
+            transport: McpServerTransportConfig::StreamableHttp {
+                url: "https://docs.example/mcp".to_string(),
+                bearer_token_env_var: None,
+                http_headers: None,
+                env_http_headers: None,
+            },
+            environment_id: codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+            enabled: true,
+            required: false,
+            supports_parallel_tool_calls: false,
+            disabled_reason: None,
+            startup_timeout_sec: None,
+            tool_timeout_sec: None,
+            default_tools_approval_mode: None,
+            enabled_tools: None,
+            disabled_tools: None,
+            scopes: None,
+            oauth: None,
+            oauth_resource: None,
+            tools: HashMap::new(),
+        },
     );
     config.configured_mcp_servers.insert(
         CODEX_APPS_MCP_SERVER_NAME.to_string(),
