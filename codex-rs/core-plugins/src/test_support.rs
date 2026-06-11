@@ -109,6 +109,7 @@ pub(crate) async fn load_plugins_config(codex_home: &Path, cwd: &Path) -> Plugin
     PluginsConfigInput::new(
         config_layer_stack,
         feature_enabled(&effective_config, "plugins", /*default_enabled*/ true),
+        feature_enabled(&effective_config, "apps", /*default_enabled*/ true),
         feature_enabled(
             &effective_config,
             "remote_plugin",

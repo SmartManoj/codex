@@ -12,7 +12,6 @@ pub use auth::should_retry_without_scopes;
 pub(crate) mod auth;
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -215,7 +214,7 @@ impl ToolPluginProvenance {
 }
 
 pub fn host_owned_codex_apps_enabled(config: &McpConfig, auth: Option<&CodexAuth>) -> bool {
-    config.apps_enabled && auth.is_some_and(CodexAuth::uses_codex_backend)
+    config.apps_enabled && auth.is_some_and(CodexAuth::is_chatgpt_auth)
 }
 
 pub fn configured_mcp_servers(config: &McpConfig) -> HashMap<String, McpServerConfig> {
@@ -243,24 +242,7 @@ pub fn effective_mcp_servers_from_configured(
         .map(|(name, server)| (name, EffectiveMcpServer::configured(server)))
         .collect::<HashMap<_, _>>();
     let host_owned_codex_apps_enabled_for_auth = host_owned_codex_apps_enabled(config, auth);
-    // Extensions can remove the materialized host-owned Apps server after
-    // feature/auth checks pass, so only suppress plugin MCP when that route exists.
-    let host_owned_codex_apps_available =
-        host_owned_codex_apps_enabled_for_auth && servers.contains_key(CODEX_APPS_MCP_SERVER_NAME);
-    if host_owned_codex_apps_available {
-        let plugin_ids_with_app_surface = config
-            .plugin_capability_summaries
-            .iter()
-            .filter(|plugin| !plugin.app_connector_ids.is_empty())
-            .map(|plugin| plugin.config_name.as_str())
-            .collect::<HashSet<_>>();
-        servers.retain(|name, _| {
-            let Some(plugin_id) = config.plugin_ids_by_mcp_server_name.get(name) else {
-                return true;
-            };
-            !plugin_ids_with_app_surface.contains(plugin_id.as_str())
-        });
-    } else if !host_owned_codex_apps_enabled_for_auth {
+    if !host_owned_codex_apps_enabled_for_auth {
         servers.remove(CODEX_APPS_MCP_SERVER_NAME);
     }
     servers

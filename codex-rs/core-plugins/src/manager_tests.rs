@@ -63,6 +63,178 @@ fn plugins_manager_tracks_auth_mode() {
     assert_eq!(manager.auth_mode(), None);
 }
 
+fn write_auth_projection_plugin(codex_home: &Path, name: &str, include_app: bool) {
+    let plugin_root = codex_home
+        .join("plugins/cache")
+        .join("test")
+        .join(name)
+        .join("local");
+    write_file(
+        &plugin_root.join(".codex-plugin/plugin.json"),
+        &format!(r#"{{"name":"{name}"}}"#),
+    );
+    write_file(
+        &plugin_root.join(".mcp.json"),
+        &format!(
+            r#"{{
+  "mcpServers": {{
+    "{name}": {{
+      "type": "stdio",
+      "command": "{name}-mcp"
+    }}
+  }}
+}}"#
+        ),
+    );
+    if include_app {
+        write_file(
+            &plugin_root.join(".app.json"),
+            &format!(r#"{{"apps":{{"{name}":{{"id":"connector_{name}"}}}}}}"#),
+        );
+    }
+}
+
+fn auth_projection_config_toml(apps_enabled: bool) -> String {
+    format!(
+        r#"[features]
+plugins = true
+apps = {apps_enabled}
+
+[plugins."sample@test"]
+enabled = true
+
+[plugins."docs@test"]
+enabled = true
+"#
+    )
+}
+
+async fn auth_projection_config(codex_home: &Path, apps_enabled: bool) -> PluginsConfigInput {
+    let config_toml = auth_projection_config_toml(apps_enabled);
+    write_file(&codex_home.join(CONFIG_TOML_FILE), &config_toml);
+    load_config(codex_home, codex_home).await
+}
+
+fn sorted_effective_mcp_server_names(outcome: &PluginLoadOutcome) -> Vec<String> {
+    let mut names = outcome
+        .effective_mcp_servers()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn plugin_auth_projection_hides_apps_without_chatgpt_auth() {
+    let codex_home = TempDir::new().unwrap();
+    write_auth_projection_plugin(codex_home.path(), "sample", /*include_app*/ true);
+    write_auth_projection_plugin(codex_home.path(), "docs", /*include_app*/ false);
+    let config = auth_projection_config(codex_home.path(), /*apps_enabled*/ true).await;
+    let manager = PluginsManager::new(codex_home.path().to_path_buf());
+    assert!(manager.set_auth_mode(Some(AuthMode::ApiKey)));
+
+    let outcome = manager.plugins_for_config(&config).await;
+
+    assert!(outcome.effective_apps().is_empty());
+    assert_eq!(
+        sorted_effective_mcp_server_names(&outcome),
+        vec!["docs".to_string(), "sample".to_string()]
+    );
+    let sample = outcome
+        .capability_summaries()
+        .iter()
+        .find(|plugin| plugin.config_name == "sample@test")
+        .expect("sample plugin summary should exist");
+    assert_eq!(sample.mcp_server_names, vec!["sample".to_string()]);
+    assert!(sample.app_connector_ids.is_empty());
+}
+
+#[tokio::test]
+async fn plugin_auth_projection_hides_dual_surface_mcp_with_chatgpt_apps_route() {
+    let codex_home = TempDir::new().unwrap();
+    write_auth_projection_plugin(codex_home.path(), "sample", /*include_app*/ true);
+    write_auth_projection_plugin(codex_home.path(), "docs", /*include_app*/ false);
+    let config = auth_projection_config(codex_home.path(), /*apps_enabled*/ true).await;
+    let manager = PluginsManager::new(codex_home.path().to_path_buf());
+    assert!(manager.set_auth_mode(Some(AuthMode::Chatgpt)));
+
+    let outcome = manager.plugins_for_config(&config).await;
+
+    assert_eq!(
+        outcome.effective_apps(),
+        vec![AppConnectorId("connector_sample".to_string())]
+    );
+    assert_eq!(
+        sorted_effective_mcp_server_names(&outcome),
+        vec!["docs".to_string()]
+    );
+    let sample = outcome
+        .capability_summaries()
+        .iter()
+        .find(|plugin| plugin.config_name == "sample@test")
+        .expect("sample plugin summary should exist");
+    assert!(sample.mcp_server_names.is_empty());
+    assert_eq!(
+        sample.app_connector_ids,
+        vec![AppConnectorId("connector_sample".to_string())]
+    );
+    let docs = outcome
+        .capability_summaries()
+        .iter()
+        .find(|plugin| plugin.config_name == "docs@test")
+        .expect("docs plugin summary should exist");
+    assert_eq!(docs.mcp_server_names, vec!["docs".to_string()]);
+    assert!(docs.app_connector_ids.is_empty());
+}
+
+#[tokio::test]
+async fn plugin_auth_projection_keeps_mcp_when_apps_feature_is_disabled() {
+    let codex_home = TempDir::new().unwrap();
+    write_auth_projection_plugin(codex_home.path(), "sample", /*include_app*/ true);
+    write_auth_projection_plugin(codex_home.path(), "docs", /*include_app*/ false);
+    let config = auth_projection_config(codex_home.path(), /*apps_enabled*/ false).await;
+    let manager = PluginsManager::new(codex_home.path().to_path_buf());
+    assert!(manager.set_auth_mode(Some(AuthMode::Chatgpt)));
+
+    let outcome = manager.plugins_for_config(&config).await;
+
+    assert!(outcome.effective_apps().is_empty());
+    assert_eq!(
+        sorted_effective_mcp_server_names(&outcome),
+        vec!["docs".to_string(), "sample".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn plugin_auth_projection_reprojects_cached_outcome_when_auth_changes() {
+    let codex_home = TempDir::new().unwrap();
+    write_auth_projection_plugin(codex_home.path(), "sample", /*include_app*/ true);
+    write_auth_projection_plugin(codex_home.path(), "docs", /*include_app*/ false);
+    let config = auth_projection_config(codex_home.path(), /*apps_enabled*/ true).await;
+    let manager = PluginsManager::new(codex_home.path().to_path_buf());
+    assert!(manager.set_auth_mode(Some(AuthMode::Chatgpt)));
+
+    let chatgpt_outcome = manager.plugins_for_config(&config).await;
+    assert_eq!(
+        sorted_effective_mcp_server_names(&chatgpt_outcome),
+        vec!["docs".to_string()]
+    );
+    assert_eq!(
+        chatgpt_outcome.effective_apps(),
+        vec![AppConnectorId("connector_sample".to_string())]
+    );
+
+    assert!(manager.set_auth_mode(Some(AuthMode::ApiKey)));
+    let api_key_outcome = manager.plugins_for_config(&config).await;
+
+    assert_eq!(
+        sorted_effective_mcp_server_names(&api_key_outcome),
+        vec!["docs".to_string(), "sample".to_string()]
+    );
+    assert!(api_key_outcome.effective_apps().is_empty());
+}
+
 fn write_plugin_with_version(
     root: &Path,
     dir_name: &str,
@@ -1410,6 +1582,7 @@ async fn plugin_cache_ignores_unrelated_session_overrides() {
         PluginsConfigInput::new(
             stack(session_config),
             /*plugins_enabled*/ true,
+            /*apps_enabled*/ true,
             /*remote_plugin_enabled*/ false,
             "https://chatgpt.com".to_string(),
         )

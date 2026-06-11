@@ -87,6 +87,7 @@ const FEATURED_PLUGIN_IDS_CACHE_TTL: std::time::Duration =
 pub struct PluginsConfigInput {
     pub config_layer_stack: ConfigLayerStack,
     pub plugins_enabled: bool,
+    pub apps_enabled: bool,
     pub remote_plugin_enabled: bool,
     pub chatgpt_base_url: String,
 }
@@ -95,12 +96,14 @@ impl PluginsConfigInput {
     pub fn new(
         config_layer_stack: ConfigLayerStack,
         plugins_enabled: bool,
+        apps_enabled: bool,
         remote_plugin_enabled: bool,
         chatgpt_base_url: String,
     ) -> Self {
         Self {
             config_layer_stack,
             plugins_enabled,
+            apps_enabled,
             remote_plugin_enabled,
             chatgpt_base_url,
         }
@@ -206,9 +209,21 @@ fn featured_plugin_ids_cache_key(
 
 fn project_plugin_load_outcome_for_auth(
     outcome: PluginLoadOutcome,
-    _auth_mode: Option<AuthMode>,
+    auth_mode: Option<AuthMode>,
+    apps_enabled: bool,
 ) -> PluginLoadOutcome {
-    outcome
+    let apps_route_available = apps_enabled && auth_mode.is_some_and(AuthMode::has_chatgpt_account);
+    let mut plugins = outcome.plugins().to_vec();
+    for plugin in &mut plugins {
+        if apps_route_available {
+            if plugin.is_active() && !plugin.apps.is_empty() {
+                plugin.mcp_servers.clear();
+            }
+        } else {
+            plugin.apps.clear();
+        }
+    }
+    PluginLoadOutcome::from_plugins(plugins)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -446,7 +461,7 @@ impl PluginsManager {
             remote_plugin_enabled: config.remote_plugin_enabled,
         };
         if !force_reload && let Some(outcome) = self.cached_enabled_outcome(&cache_key) {
-            return self.project_plugins_for_auth(outcome);
+            return self.project_plugins_for_auth(outcome, config.apps_enabled);
         }
 
         let Ok(_load_permit) = self.enabled_outcome_load_semaphore.acquire().await else {
@@ -454,7 +469,7 @@ impl PluginsManager {
             return PluginLoadOutcome::default();
         };
         if !force_reload && let Some(outcome) = self.cached_enabled_outcome(&cache_key) {
-            return self.project_plugins_for_auth(outcome);
+            return self.project_plugins_for_auth(outcome, config.apps_enabled);
         }
         let cache_generation = self.enabled_outcome_cache_generation();
         let outcome = load_plugins_from_layer_stack(
@@ -467,11 +482,15 @@ impl PluginsManager {
         .await;
         log_plugin_load_errors(&outcome);
         self.cache_enabled_outcome_if_current(cache_generation, cache_key, outcome.clone());
-        self.project_plugins_for_auth(outcome)
+        self.project_plugins_for_auth(outcome, config.apps_enabled)
     }
 
-    fn project_plugins_for_auth(&self, outcome: PluginLoadOutcome) -> PluginLoadOutcome {
-        project_plugin_load_outcome_for_auth(outcome, self.auth_mode())
+    fn project_plugins_for_auth(
+        &self,
+        outcome: PluginLoadOutcome,
+        apps_enabled: bool,
+    ) -> PluginLoadOutcome {
+        project_plugin_load_outcome_for_auth(outcome, self.auth_mode(), apps_enabled)
     }
 
     pub fn clear_cache(&self) {
@@ -509,7 +528,7 @@ impl PluginsManager {
             config.remote_plugin_enabled,
         )
         .await;
-        self.project_plugins_for_auth(outcome)
+        self.project_plugins_for_auth(outcome, config.apps_enabled)
     }
 
     /// Resolve plugin hooks for a config layer stack without loading other plugin capabilities.
