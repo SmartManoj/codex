@@ -375,7 +375,13 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
             .get(index)
             .and_then(rewritten_output_for_context_window)
         else {
-            break;
+            // This item cannot be truncated (e.g. reasoning or a plain message).
+            // Skip it and keep scanning older items for tool outputs we can
+            // shrink; breaking here would leave history over the context window
+            // whenever a non-truncatable item sits between us and an output,
+            // which surfaces as a `context_length_exceeded` error during remote
+            // compaction.
+            continue;
         };
         let mut items = history.raw_items().to_vec();
         items[index] = rewritten_item;

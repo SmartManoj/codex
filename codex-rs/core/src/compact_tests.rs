@@ -621,3 +621,92 @@ fn insert_initial_context_before_last_real_user_or_summary_keeps_compaction_last
     ];
     assert_eq!(refreshed, expected);
 }
+
+fn function_call_output(call_id: &str, text: &str) -> ResponseItem {
+    ResponseItem::FunctionCallOutput {
+        call_id: call_id.to_string(),
+        output: codex_protocol::models::FunctionCallOutputPayload::from_text(text.to_string()),
+    }
+}
+
+fn reasoning_item(text: &str) -> ResponseItem {
+    ResponseItem::Reasoning {
+        id: String::new(),
+        summary: vec![
+            codex_protocol::models::ReasoningItemReasoningSummary::SummaryText {
+                text: "summary".to_string(),
+            },
+        ],
+        content: Some(vec![
+            codex_protocol::models::ReasoningItemContent::ReasoningText {
+                text: text.to_string(),
+            },
+        ]),
+        encrypted_content: None,
+    }
+}
+
+fn function_output_text(item: &ResponseItem) -> Option<String> {
+    match item {
+        ResponseItem::FunctionCallOutput { output, .. } => match &output.body {
+            codex_protocol::models::FunctionCallOutputBody::Text(text) => Some(text.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn trim_function_call_history_truncates_outputs_behind_non_output_items() {
+    let (_session, mut turn_context) =
+        crate::session::tests::make_session_and_context().await;
+    // Force a tiny context window so even modest tool outputs overflow it.
+    turn_context.model_info.context_window = Some(500);
+    turn_context.model_info.max_context_window = Some(500);
+    turn_context.model_info.effective_context_window_percent = 100;
+
+    let base_instructions = codex_protocol::models::BaseInstructions {
+        text: String::new(),
+    };
+
+    // A large tool output, then a reasoning item, then another large tool output.
+    // The reasoning item sits between the two outputs, so the old `break`-on-first
+    // non-truncatable-item behavior would stop after shrinking only the newest
+    // output and leave history over the context window.
+    let mut history = crate::context_manager::ContextManager::new();
+    history.replace(vec![
+        function_call_output("call-a", &"A".repeat(4000)),
+        reasoning_item("thinking"),
+        function_call_output("call-b", &"B".repeat(4000)),
+    ]);
+
+    let before = history
+        .estimate_token_count_with_base_instructions(&base_instructions)
+        .unwrap();
+    assert!(before > 500, "precondition: history should overflow window");
+
+    let (rewritten_outputs, deleted_tokens) =
+        crate::compact_remote::trim_function_call_history_to_fit_context_window(
+            &mut history,
+            &turn_context,
+            &base_instructions,
+        );
+
+    // Both outputs must be truncated, not just the newest one before the
+    // reasoning item.
+    assert_eq!(rewritten_outputs, 2);
+    assert!(deleted_tokens > 0);
+
+    let items = history.raw_items();
+    let truncated = "Output exceeded the available model context and was truncated";
+    assert_eq!(function_output_text(&items[0]).as_deref(), Some(truncated));
+    assert_eq!(function_output_text(&items[2]).as_deref(), Some(truncated));
+
+    let after = history
+        .estimate_token_count_with_base_instructions(&base_instructions)
+        .unwrap();
+    assert!(
+        after <= 500,
+        "history should fit the context window after trimming (got {after})"
+    );
+}
